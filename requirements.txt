@@ -1,0 +1,18 @@
+# Core dependencies with pinned versions for reproducibility
+opencv-python==4.10.0.84
+torch==2.7.1
+transformers==4.53.3
+streamlit==1.47.0
+ultralytics==8.3.26
+pytesseract==0.3.13
+Pillow==10.4.0
+numpy==1.26.4
+requests==2.32.3
+
+# Development and testing dependencies
+pytest==8.4.1
+pytest-cov==5.0.0
+
+# Optional GPU support (uncomment if using CUDA)
+# torchvision==0.19.1
+# torchaudio==2.5.1
