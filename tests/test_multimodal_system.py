@@ -57,7 +57,7 @@ class TestMultimodalAI:
         scene = np.ones((600, 800, 3), dtype=np.uint8) * 135  # Gray background
         # Draw a house
         cv2.rectangle(scene, (200, 300), (600, 500), (139, 69, 19), -1)  # Brown house
-        cv2.polygon(scene, np.array([[200, 300], [400, 200], [600, 300]]), (0, 0, 255))  # Red roof
+        cv2.fillPoly(scene, [np.array([[200, 300], [400, 200], [600, 300]])], (0, 0, 255))  # Red roof
         cv2.rectangle(scene, (300, 400), (350, 500), (101, 67, 33), -1)  # Door
         cv2.rectangle(scene, (450, 350), (550, 400), (173, 216, 230), -1)  # Window
         # Add a car
@@ -85,7 +85,7 @@ class TestMultimodalAI:
         shapes_img = np.zeros((400, 400, 3), dtype=np.uint8)
         cv2.rectangle(shapes_img, (50, 50), (150, 150), (255, 255, 255), -1)  # White square
         cv2.circle(shapes_img, (300, 100), 50, (0, 255, 0), -1)  # Green circle
-        cv2.polygon(shapes_img, np.array([[200, 200], [250, 300], [150, 300]]), (0, 0, 255))  # Red triangle
+        cv2.fillPoly(shapes_img, [np.array([[200, 200], [250, 300], [150, 300]])], (0, 0, 255))  # Red triangle
         shapes_path = os.path.join(temp_dir, "geometric_shapes.jpg")
         cv2.imwrite(shapes_path, shapes_img)
         images["geometric_shapes"] = shapes_path
@@ -122,21 +122,21 @@ class TestMultimodalAI:
     def test_initialization(self):
         """Test MultimodalAI system initialization."""
         system = MultimodalAI()
-        assert hasattr(system, 'img_proc')
-        assert hasattr(system, 'llm_proc')
-        assert isinstance(system.img_proc, ImageProcessor)
-        assert isinstance(system.llm_proc, LLMProcessor)
+        assert hasattr(system, 'image_processor')
+        assert hasattr(system, 'llm_processor')
+        assert isinstance(system.image_processor, ImageProcessor)
+        assert isinstance(system.llm_processor, LLMProcessor)
 
     def test_initialization_components(self):
         """Test that all components are properly initialized."""
         system = MultimodalAI()
 
         # Check image processor
-        assert system.img_proc.model is not None
+        assert system.image_processor.yolo_model is not None
 
         # Check LLM processor
-        assert system.llm_proc.processor is not None
-        assert system.llm_proc.model is not None
+        assert system.llm_processor.processor is not None
+        assert system.llm_processor.model is not None
 
     # BASIC FUNCTIONALITY TESTS
     def test_process_basic_functionality(self, multimodal_system, comprehensive_test_images):

@@ -19,9 +19,33 @@ from typing import Dict, Any, Optional
 import tempfile
 import os
 
-# Import our modules
-from .multimodal_system import MultimodalAI
-from .utils import convert_bgr_to_rgb
+
+# Custom JSON encoder for numpy types
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.int8, np.int16, np.int32, np.int64,
+                           np.uint8, np.uint16, np.uint32, np.uint64)):
+            return int(obj)
+        if isinstance(obj, (np.float16, np.float32, np.float64)):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
+import sys
+
+# Add parent directory to path for Streamlit execution
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import our modules - try both relative and absolute imports
+try:
+    from src.multimodal_system import MultimodalAI
+    from src.utils import convert_bgr_to_rgb
+except ImportError:
+    from multimodal_system import MultimodalAI
+    from utils import convert_bgr_to_rgb
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -128,7 +152,7 @@ def display_image_with_detections(image_path: str, detections: list) -> None:
 
         # Convert BGR to RGB for display
         image_rgb = convert_bgr_to_rgb(image)
-        st.image(image_rgb, caption="Image with Object Detections", use_column_width=True)
+        st.image(image_rgb, caption="Image with Object Detections", use_container_width=True)
 
     except Exception as e:
         st.error(f"Error displaying image with detections: {str(e)}")
@@ -328,7 +352,7 @@ def main():
         if uploaded_file is not None:
             # Display uploaded image
             image = Image.open(uploaded_file)
-            st.image(image, caption="Uploaded Image", use_column_width=True)
+            st.image(image, caption="Uploaded Image", use_container_width=True)
 
             # Save uploaded file temporarily
             with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
@@ -435,7 +459,7 @@ def main():
 
                         # Download results
                         st.markdown("#### 💾 Download Results")
-                        results_json = json.dumps(results, indent=2)
+                        results_json = json.dumps(results, indent=2, cls=NumpyEncoder)
                         st.download_button(
                             label="📄 Download Analysis Results (JSON)",
                             data=results_json,

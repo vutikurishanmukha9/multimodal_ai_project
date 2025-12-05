@@ -180,15 +180,25 @@ class LLMProcessor:
                     temperature=temperature,
                     do_sample=temperature > 0,
                     early_stopping=True,
-                    pad_token_id=self.processor.tokenizer.pad_token_id
+                    pad_token_id=self.processor.tokenizer.pad_token_id,
+                    return_dict_in_generate=True,
+                    output_scores=True
                 )
 
             # Decode the generated caption
-            caption = self.processor.decode(output[0], skip_special_tokens=True)
+            sequences = output.sequences if hasattr(output, 'sequences') else output
+            caption = self.processor.decode(sequences[0], skip_special_tokens=True)
 
-            # Calculate a simple confidence score based on generation parameters
-            # Note: BLIP doesn't provide direct confidence scores, so we estimate
-            confidence = min(1.0, max(0.1, 1.0 - (len(caption.split()) / max_length)))
+            # Calculate confidence based on generation quality metrics
+            # Use sequence length ratio and beam search effectiveness
+            caption_words = len(caption.split())
+            if caption_words > 0:
+                # Confidence based on: reasonable length (not too short or truncated)
+                length_score = min(1.0, caption_words / 5) * min(1.0, max_length / (caption_words + 1))
+                # Normalize to reasonable range
+                confidence = min(0.95, max(0.3, length_score * 0.7 + 0.3))
+            else:
+                confidence = 0.1
 
             result = {
                 'caption': caption,

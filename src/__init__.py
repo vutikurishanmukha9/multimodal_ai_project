@@ -1,18 +1,53 @@
 """
-Test package for Multimodal AI System
+Multimodal AI System package.
 
-This package contains unit tests for all components:
-- test_image_processor.py: Tests for OpenCV image processing
-- test_llm_integration.py: Tests for BLIP language model integration
-- test_multimodal_system.py: Tests for the main system integration
-- test_utils.py: Tests for utility functions
+This package provides a comprehensive multimodal AI system that combines 
+computer vision and natural language processing for image analysis.
+
+Modules:
+- image_processor: OpenCV-based image processing and feature extraction
+- llm_integration: BLIP vision-language model integration
+- multimodal_system: Main system orchestrator combining all components
+- utils: Shared utility functions
+- web_app: Streamlit-based web interface
+
+Example usage:
+    from src.multimodal_system import MultimodalAI
+    
+    system = MultimodalAI()
+    results = system.process("image.jpg", "What do you see?")
+    print(results['answer'])
 """
 
-# Test configuration
-import pytest
-import logging
+from .image_processor import ImageProcessor
+from .llm_integration import LLMProcessor
+from .multimodal_system import MultimodalAI
+from .utils import (
+    load_image,
+    load_image_pil,
+    resize_image,
+    normalize_image,
+    convert_bgr_to_rgb,
+    convert_rgb_to_bgr,
+    validate_image_format,
+    draw_bounding_box,
+    get_image_info
+)
 
-# Set up test logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+__version__ = "1.0.0"
+__author__ = "Multimodal AI Team"
 
-# Shared test fixtures and utilities can be added here
+__all__ = [
+    "ImageProcessor",
+    "LLMProcessor", 
+    "MultimodalAI",
+    "load_image",
+    "load_image_pil",
+    "resize_image",
+    "normalize_image",
+    "convert_bgr_to_rgb",
+    "convert_rgb_to_bgr",
+    "validate_image_format",
+    "draw_bounding_box",
+    "get_image_info"
+]

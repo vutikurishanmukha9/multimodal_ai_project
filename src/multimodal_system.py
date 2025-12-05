@@ -10,6 +10,7 @@ This module provides the MultimodalAI class that combines:
 import logging
 from typing import Dict, List, Any, Optional, Union
 from PIL import Image
+import cv2
 import json
 import os
 from datetime import datetime

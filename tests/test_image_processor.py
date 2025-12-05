@@ -69,13 +69,13 @@ class TestImageProcessor:
     def test_initialization(self):
         """Test ImageProcessor initialization."""
         processor = ImageProcessor()
-        assert processor.model is not None
-        assert hasattr(processor, 'model')
+        assert processor.yolo_model is not None
+        assert hasattr(processor, 'yolo_model')
 
     def test_initialization_custom_model(self):
         """Test ImageProcessor initialization with custom model."""
-        processor = ImageProcessor(yolo_model_path='yolov8s.pt')
-        assert processor.model is not None
+        processor = ImageProcessor(yolo_model='yolov8s.pt')
+        assert processor.yolo_model is not None
 
     @pytest.mark.parametrize("size", [(640, 640), (320, 320), (800, 600), (1024, 768)])
     def test_preprocess_dimensions(self, processor, sample_images, size):
