@@ -4,13 +4,21 @@ A comprehensive multimodal AI system that combines computer vision and natural l
 
 ## Features
 
+### Core Analysis
 - **Object Detection**: Real-time object detection using YOLOv8 with bounding boxes and confidence scores
 - **Image Captioning**: Automatic image description using Salesforce BLIP vision-language model
 - **Visual Question Answering**: Ask natural language questions about image content
-- **Color Analysis**: K-means clustering to extract dominant colors
+- **Color Analysis**: K-means clustering to extract dominant colors with hex codes
 - **Text Recognition (OCR)**: Tesseract-based optical character recognition
-- **Web Interface**: Interactive Streamlit application with drag-and-drop upload
-- **Comprehensive Testing**: Full pytest test suite with unit and integration tests
+
+### New Features
+- **Face Detection**: Automatic face detection with location and size information
+- **Image Quality Scoring**: Brightness, contrast, sharpness, and blur detection metrics
+- **Dark/Light Theme**: Toggle between dark and light modes
+- **URL Image Loading**: Load images directly from web URLs
+- **Image History**: Quick access to last 5 analyzed images
+- **Suggested Questions**: AI-powered question suggestions based on image content
+- **Modern UI**: Glass-morphism design with smooth gradients and animations
 
 ## Project Structure
 
@@ -20,7 +28,7 @@ multimodal_ai_project/
 │   ├── image_processor.py      # OpenCV + YOLOv8 + OCR processing
 │   ├── llm_integration.py      # BLIP vision-language model wrapper
 │   ├── multimodal_system.py    # Main orchestrator combining all components
-│   ├── web_app.py              # Streamlit web interface
+│   ├── web_app.py              # Enhanced Streamlit web interface
 │   ├── utils.py                # Shared utility functions
 │   └── __init__.py             # Package exports
 ├── tests/
@@ -102,13 +110,50 @@ print("Dominant Colors:", results['features']['colors'])
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| opencv-python | 4.10.0 | Image processing |
+| opencv-python | 4.10.0 | Image processing & face detection |
 | torch | 2.7.1 | Deep learning framework |
 | transformers | 4.53.3 | BLIP model loading |
 | ultralytics | 8.3.26 | YOLOv8 object detection |
 | streamlit | 1.47.0 | Web interface |
 | pytesseract | 0.3.13 | OCR text extraction |
 | Pillow | 10.4.0 | Image I/O |
+| requests | 2.32.0 | URL image loading |
+
+## Web Interface Features
+
+### Theme Support
+- Dark mode with purple gradients
+- Light mode with clean, professional styling
+- Theme preference persists during session
+
+### Input Methods
+- File upload (drag-and-drop or browse)
+- URL loading (paste any image URL)
+
+### Analysis Options (Configurable)
+- Object detection with confidence threshold
+- Face detection
+- Color analysis (3-10 colors)
+- Text recognition (OCR)
+- Image quality scoring
+
+### Results Display
+- Tabbed interface: Objects, Faces, Colors, Text, Quality
+- Annotated image with bounding boxes
+- Suggested follow-up questions
+- JSON export for all results
+
+## Image Quality Metrics
+
+The quality analyzer provides:
+
+| Metric | Description |
+|--------|-------------|
+| Brightness | Average pixel intensity (0-255) |
+| Contrast | Standard deviation of pixels |
+| Sharpness | Laplacian variance (higher = sharper) |
+| Blur Detection | Boolean indicating if image is blurry |
+| Overall Score | Weighted combination (0-100) |
 
 ## Running Tests
 
@@ -122,36 +167,6 @@ pytest tests/ --cov=src --cov-report=html
 # Run specific test file
 pytest tests/test_image_processor.py -v
 ```
-
-## Core Components
-
-### ImageProcessor
-
-Handles all computer vision tasks using OpenCV:
-
-- Image loading, resizing, and normalization
-- Object detection with YOLOv8 (supports nano/small/medium/large models)
-- Color extraction using K-means clustering
-- Text extraction with Tesseract OCR preprocessing
-
-### LLMProcessor
-
-Wraps the Salesforce BLIP vision-language model:
-
-- Conditional and unconditional image captioning
-- Visual question answering based on image context
-- Automatic device detection (CPU/CUDA/MPS)
-- Batch processing support
-
-### MultimodalAI
-
-Main orchestrator that combines all components:
-
-1. Preprocess image (resize, normalize)
-2. Extract visual features (objects, colors, text)
-3. Generate image caption
-4. Answer questions using combined context
-5. Generate analysis summary
 
 ## Configuration Options
 
@@ -169,41 +184,6 @@ Main orchestrator that combines all components:
 - `Salesforce/blip-image-captioning-base` - Default, balanced
 - `Salesforce/blip-image-captioning-large` - More accurate, slower
 - `Salesforce/blip-vqa-base` - Optimized for Q&A tasks
-
-## Web Interface Features
-
-- **Image Upload**: Drag-and-drop or file browser
-- **Question Input**: Natural language questions about images
-- **Tabbed Results**: Organized display of AI response, objects, colors, and text
-- **Configuration Sidebar**: Adjust confidence thresholds, color count, model parameters
-- **Detection Visualization**: Bounding boxes overlaid on images
-- **JSON Export**: Download complete analysis results
-
-## Example Output
-
-```json
-{
-  "caption": {
-    "caption": "a dog sitting on a couch in a living room",
-    "confidence": 0.85
-  },
-  "features": {
-    "objects": [
-      {"class_name": "dog", "confidence": 0.92, "bbox": [120, 80, 340, 290]},
-      {"class_name": "couch", "confidence": 0.87, "bbox": [50, 150, 450, 380]}
-    ],
-    "colors": [
-      {"rgb": [139, 90, 43], "hex": "#8b5a2b", "percentage": 28.5},
-      {"rgb": [210, 180, 140], "hex": "#d2b48c", "percentage": 22.1}
-    ],
-    "ocr_text": {"text": "", "word_count": 0}
-  },
-  "answer": {
-    "answer": "I can see a dog sitting on a couch",
-    "confidence": 0.78
-  }
-}
-```
 
 ## Troubleshooting
 
