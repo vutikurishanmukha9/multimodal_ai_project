@@ -14,9 +14,11 @@ import cv2
 import json
 import os
 from datetime import datetime
+import numpy as np
 
-from .image_processor import ImageProcessor
-from .llm_integration import LLMProcessor
+
+# Import Services
+from .services import LocalYoloService, LocalBlipService, LlaVAService
 from .utils import load_image_pil, validate_image_format, create_output_directory
 
 # Set up logging
@@ -26,17 +28,15 @@ logger = logging.getLogger(__name__)
 class MultimodalAI:
     """
     Main multimodal AI system that combines computer vision and language understanding.
-
-    This class orchestrates the entire pipeline:
-    1. Image loading and preprocessing
-    2. Feature extraction (objects, colors, text)
-    3. Image captioning
-    4. Question answering based on visual content
+    
+    Now uses a Service-based architecture for better scalability and abstraction.
     """
 
     def __init__(self, 
                  yolo_model: str = "yolov8n.pt",
                  blip_model: str = "Salesforce/blip-image-captioning-base",
+                 llava_model: str = "llava-hf/llava-1.5-7b-hf",
+                 llm_type: str = "blip",
                  device: str = "auto"):
         """
         Initialize the multimodal AI system.
@@ -44,15 +44,19 @@ class MultimodalAI:
         Args:
             yolo_model (str): YOLO model for object detection
             blip_model (str): BLIP model for image captioning
+            llava_model (str): LlaVA model id
+            llm_type (str): 'blip' or 'llava'
             device (str): Computation device ('auto', 'cpu', 'cuda')
         """
         self.device = device
-        self.yolo_model = yolo_model
-        self.blip_model = blip_model
+        self.yolo_model_path = yolo_model
+        self.blip_model_id = blip_model
+        self.llava_model_id = llava_model
+        self.llm_type = llm_type
 
-        # Initialize processors
-        self.image_processor = None
-        self.llm_processor = None
+        # Initialize services
+        self.vision_service = None
+        self.llm_service = None
 
         # Initialize components
         self._initialize_components()
@@ -60,25 +64,55 @@ class MultimodalAI:
         # Store results from last processing
         self.last_results = {}
 
-        logger.info("MultimodalAI system initialized successfully")
+        logger.info(f"MultimodalAI system initialized successfully (LLM: {self.llm_type})")
 
     def _initialize_components(self) -> None:
-        """Initialize the image processor and LLM processor."""
+        """Initialize the vision and LLM services."""
         try:
-            logger.info("Initializing image processor...")
-            self.image_processor = ImageProcessor(yolo_model=self.yolo_model)
+            logger.info("Initializing Vision Service...")
+            self.vision_service = LocalYoloService(model_path=self.yolo_model_path)
 
-            logger.info("Initializing LLM processor...")
-            self.llm_processor = LLMProcessor(
-                model_id=self.blip_model,
-                device=self.device
-            )
+            logger.info(f"Initializing LLM Service ({self.llm_type})...")
+            if self.llm_type == "llava":
+                self.llm_service = LlaVAService(model_id=self.llava_model_id, device=self.device)
+            else:
+                self.llm_service = LocalBlipService(model_id=self.blip_model_id, device=self.device)
 
-            logger.info("All components initialized successfully")
+            logger.info("All services initialized successfully")
 
         except Exception as e:
             logger.error(f"Failed to initialize components: {str(e)}")
             raise
+
+    def _switch_llm_service(self, new_type: str) -> None:
+        """Switch the active LLM service if needed."""
+        if new_type == self.llm_type and self.llm_service is not None:
+            return
+
+        logger.info(f"Switching LLM service from {self.llm_type} to {new_type}...")
+        try:
+            # Unload current service to free memory (crucial for GPU)
+            if self.llm_service:
+                del self.llm_service
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            self.llm_type = new_type
+            if new_type == "llava":
+                self.llm_service = LlaVAService(model_id=self.llava_model_id, device=self.device)
+            else:
+                self.llm_service = LocalBlipService(model_id=self.blip_model_id, device=self.device)
+                
+            logger.info(f"Successfully switched to {new_type}")
+        except Exception as e:
+            logger.error(f"Failed to switch LLM service: {str(e)}")
+            # Fallback to BLIP if LlaVA fails
+            if new_type != "blip":
+                 logger.warning("Falling back to BLIP...")
+                 self._switch_llm_service("blip")
+            else:
+                 raise
 
     def process(self, image_path: str, question: str,
                 analysis_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -94,99 +128,139 @@ class MultimodalAI:
             Dict[str, Any]: Comprehensive analysis results
         """
         if not validate_image_format(image_path):
-            error_msg = f"Unsupported image format: {image_path}"
-            logger.error(error_msg)
-            return {'error': error_msg}
+            return {'error': f"Unsupported image format: {image_path}"}
 
         if not os.path.exists(image_path):
-            error_msg = f"Image file not found: {image_path}"
-            logger.error(error_msg)
-            return {'error': error_msg}
+            return {'error': f"Image file not found: {image_path}"}
 
         # Use default config if none provided
         if analysis_config is None:
             analysis_config = self._get_default_config()
 
+        # Check for model switch
+        requested_model = analysis_config.get('llm_model', 'blip')
+        if requested_model != self.llm_type:
+             self._switch_llm_service(requested_model)
+
         logger.info(f"Starting multimodal analysis of: {image_path}")
-        logger.info(f"Question: {question}")
+        
+        # Load image
+        try:
+            pil_image = Image.open(image_path).convert('RGB')
+            # Keeping cv2 image for some legacy/utility functions if needed
+            cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR) 
+        except Exception as e:
+            return {'error': f"Failed to load image: {str(e)}"}
 
         results = {
             'image_path': image_path,
             'question': question,
             'timestamp': datetime.now().isoformat(),
             'analysis_config': analysis_config,
+            'features': {},
             'processing_steps': {}
         }
 
         try:
-            # Step 1: Load and preprocess image
-            logger.info("Step 1: Image preprocessing")
-            preprocessed = self.image_processor.preprocess(
-                image_path,
-                target_size=analysis_config.get('target_size', (640, 640)),
-                normalize=analysis_config.get('normalize', True)
+            # Step 1: Object Detection (Vision Service)
+            logger.info("Step 1: Object Detection")
+            detections = self.vision_service.detect_objects(
+                cv_image, 
+                confidence_threshold=analysis_config.get('object_detection', {}).get('confidence_threshold', 0.5)
             )
+            results['features']['objects'] = detections
+            results['processing_steps']['object_detection'] = {'status': 'success', 'count': len(detections)}
+            
+            # Step 2: Visual Chain-of-Thought (Advanced Reasoning)
+            reasoning_context = ""
+            if analysis_config.get('reasoning_mode') == 'detailed':
+                logger.info("Step 2: Visual Chain-of-Thought Analysis")
+                reasoning_context = self._perform_visual_cot(pil_image, detections)
+                results['processing_steps']['visual_cot'] = {'status': 'success'}
+            else:
+                logger.info("Skipping detailed visual reasoning (Fast Mode)")
 
-            if preprocessed is None:
-                error_msg = "Failed to preprocess image"
-                logger.error(error_msg)
-                results['error'] = error_msg
-                return results
+            # Step 3: Global Captioning (LLM Service)
+            logger.info("Step 3: Global Captioning")
+            global_caption = self.llm_service.caption_image(pil_image)
+            results['caption'] = {'caption': global_caption} # Maintain legacy structure
+            
+            # Step 4: Question Answering (LLM Service)
+            logger.info("Step 4: Question Answering")
+            
+            # specific logic for Q&A prompt construction
+            full_context = f"Image description: {global_caption}. "
+            if reasoning_context:
+                full_context += f" Detailed observations: {reasoning_context}"
+            else:
+                # Basic features context
+                obj_counts = {}
+                for obj in detections:
+                    obj_counts[obj['class_name']] = obj_counts.get(obj['class_name'], 0) + 1
+                obj_desc = ", ".join([f"{count} {name}" for name, count in obj_counts.items()])
+                if obj_desc:
+                    full_context += f" Objects detected: {obj_desc}."
 
-            results['processing_steps']['preprocessing'] = {
-                'status': 'success',
-                'image_shape': preprocessed.shape
+            logger.info(f"Context for QA: {full_context}")
+            
+            # Answer question using the context + image
+            # Note: We pass the image to the service, but the prompt includes the context we built
+            answer = self.llm_service.answer_question(pil_image, question, context=full_context)
+            results['answer'] = {'answer': answer} # Maintain legacy structure
+
+            # Summary generation (simplified)
+            results['summary'] = {
+                'key_findings': [
+                    f"Detected {len(detections)} objects",
+                    f"Caption: {global_caption}",
+                    f"Answer: {answer}"
+                ]
             }
-
-            # Step 2: Extract visual features
-            logger.info("Step 2: Feature extraction")
-            features = self._extract_features(analysis_config)
-            results['features'] = features
-            results['processing_steps']['feature_extraction'] = {
-                'status': 'success',
-                'features_extracted': list(features.keys())
-            }
-
-            # Step 3: Generate image caption
-            logger.info("Step 3: Image captioning")
-            caption_result = self._generate_caption(image_path, analysis_config)
-            results['caption'] = caption_result
-            results['processing_steps']['captioning'] = {
-                'status': 'success' if not caption_result.get('error') else 'error',
-                'caption_length': len(caption_result.get('caption', ''))
-            }
-
-            # Step 4: Answer question based on combined context
-            logger.info("Step 4: Question answering")
-            answer_result = self._answer_question(caption_result, features, question, analysis_config)
-            results['answer'] = answer_result
-            results['processing_steps']['question_answering'] = {
-                'status': 'success' if not answer_result.get('error') else 'error',
-                'answer_length': len(answer_result.get('answer', ''))
-            }
-
-            # Step 5: Generate comprehensive summary
-            logger.info("Step 5: Generating summary")
-            summary = self._generate_summary(results)
-            results['summary'] = summary
-
-            # Store results for future reference
+            
             self.last_results = results
-
-            logger.info("Multimodal analysis completed successfully")
+            return results
 
         except Exception as e:
             error_msg = f"Error during processing: {str(e)}"
             logger.error(error_msg)
             results['error'] = error_msg
+            return results
 
-        return results
+    def _perform_visual_cot(self, image: Image.Image, detections: List[Dict[str, Any]]) -> str:
+        """
+        Perform Visual Chain-of-Thought analysis.
+        Crops interesting objects and captions them individually.
+        """
+        observations = []
+        
+        # Sort detections by confidence and take top 5
+        top_detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)[:5]
+        
+        for det in top_detections:
+            bbox = det['bbox'] # x1, y1, x2, y2
+            class_name = det['class_name']
+            
+            # Crop image
+            try:
+                crop = image.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
+                
+                # Caption the crop
+                # We prompt specifically to describe the object
+                crop_caption = self.llm_service.caption_image(crop)
+                
+                observations.append(f"The {class_name} looks like {crop_caption}")
+            except Exception as e:
+                logger.warning(f"Failed to process crop for {class_name}: {e}")
+                continue
+                
+        return ". ".join(observations)
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration for analysis."""
         return {
             'target_size': (640, 640),
             'normalize': True,
+            'reasoning_mode': 'detailed', # Default to detailed for now as requested
             'object_detection': {
                 'enabled': True,
                 'confidence_threshold': 0.5,
@@ -197,314 +271,113 @@ class MultimodalAI:
                 'num_colors': 5,
                 'method': 'kmeans'
             },
-            'text_extraction': {
-                'enabled': True,
-                'preprocessing': {
-                    'convert_to_gray': True,
-                    'apply_gaussian_blur': True,
-                    'apply_threshold': True
-                }
-            },
             'captioning': {
                 'max_length': 50,
                 'num_beams': 5,
                 'temperature': 1.0,
-                'conditional_text': None
             },
             'question_answering': {
                 'max_length': 100,
                 'num_beams': 5,
-                'temperature': 1.0,
-                'use_features_context': True
             }
         }
 
-    def _extract_features(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract visual features from the image."""
-        features = {}
-
-        try:
-            # Object detection
-            if config.get('object_detection', {}).get('enabled', True):
-                obj_config = config['object_detection']
-                detections = self.image_processor.detect_objects(
-                    confidence_threshold=obj_config.get('confidence_threshold', 0.5),
-                    iou_threshold=obj_config.get('iou_threshold', 0.45)
-                )
-                features['objects'] = detections
-                logger.info(f"Detected {len(detections)} objects")
-
-            # Color extraction
-            if config.get('color_extraction', {}).get('enabled', True):
-                color_config = config['color_extraction']
-                colors = self.image_processor.extract_colors(
-                    num_colors=color_config.get('num_colors', 5),
-                    method=color_config.get('method', 'kmeans')
-                )
-                features['colors'] = colors
-                logger.info(f"Extracted {len(colors)} dominant colors")
-
-            # Text extraction (OCR)
-            if config.get('text_extraction', {}).get('enabled', True):
-                text_config = config['text_extraction']
-                ocr_result = self.image_processor.extract_text(
-                    preprocessing_config=text_config.get('preprocessing')
-                )
-                features['ocr_text'] = ocr_result
-                logger.info(f"Extracted text: '{ocr_result.get('text', '')[:50]}...'")
-
-            # Image statistics
-            features['image_stats'] = self.image_processor.get_image_statistics()
-
-        except Exception as e:
-            logger.error(f"Error extracting features: {str(e)}")
-            features['error'] = str(e)
-
-        return features
-
-    def _generate_caption(self, image_path: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate image caption using BLIP."""
-        try:
-            caption_config = config.get('captioning', {})
-
-            caption_result = self.llm_processor.caption_image(
-                image=image_path,
-                conditional_text=caption_config.get('conditional_text'),
-                max_length=caption_config.get('max_length', 50),
-                num_beams=caption_config.get('num_beams', 5),
-                temperature=caption_config.get('temperature', 1.0)
-            )
-
-            logger.info(f"Generated caption: '{caption_result.get('caption', '')}'")
-            return caption_result
-
-        except Exception as e:
-            error_msg = f"Error generating caption: {str(e)}"
-            logger.error(error_msg)
-            return {'error': error_msg, 'caption': ''}
-
-    def _answer_question(self, caption_result: Dict[str, Any], 
-                        features: Dict[str, Any], 
-                        question: str,
-                        config: Dict[str, Any]) -> Dict[str, Any]:
-        """Answer question based on image caption and features."""
-        try:
-            qa_config = config.get('question_answering', {})
-
-            # Build comprehensive context
-            context_parts = []
-
-            # Add caption
-            caption = caption_result.get('caption', '')
-            if caption:
-                context_parts.append(f"Image description: {caption}")
-
-            # Add features context if enabled
-            if qa_config.get('use_features_context', True):
-                # Add object information
-                objects = features.get('objects', [])
-                if objects:
-                    object_names = [obj['class_name'] for obj in objects]
-                    object_counts = {}
-                    for name in object_names:
-                        object_counts[name] = object_counts.get(name, 0) + 1
-
-                    object_desc = ", ".join([f"{count} {name}{'s' if count > 1 else ''}" 
-                                           for name, count in object_counts.items()])
-                    context_parts.append(f"Objects detected: {object_desc}")
-
-                # Add color information
-                colors = features.get('colors', [])
-                if colors and len(colors) > 0:
-                    dominant_colors = [color['hex'] for color in colors[:3]]
-                    context_parts.append(f"Dominant colors: {', '.join(dominant_colors)}")
-
-                # Add OCR text if available
-                ocr_text = features.get('ocr_text', {}).get('text', '').strip()
-                if ocr_text:
-                    context_parts.append(f"Text in image: {ocr_text}")
-
-            # Combine context
-            full_context = ". ".join(context_parts)
-
-            # Generate answer
-            answer_result = self.llm_processor.answer_question(
-                caption=full_context,
-                question=question,
-                max_length=qa_config.get('max_length', 100),
-                num_beams=qa_config.get('num_beams', 5),
-                temperature=qa_config.get('temperature', 1.0)
-            )
-
-            # Add context information to result
-            answer_result['context_used'] = full_context
-            answer_result['features_included'] = qa_config.get('use_features_context', True)
-
-            logger.info(f"Generated answer: '{answer_result.get('answer', '')}'")
-            return answer_result
-
-        except Exception as e:
-            error_msg = f"Error answering question: {str(e)}"
-            logger.error(error_msg)
-            return {'error': error_msg, 'answer': ''}
-
-    def _generate_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate a comprehensive summary of the analysis."""
-        try:
-            summary = {
-                'total_processing_time': 'N/A',  # Could be calculated if needed
-                'analysis_success': not results.get('error'),
-                'features_summary': {},
-                'key_findings': []
-            }
-
-            # Summarize features
-            features = results.get('features', {})
-
-            if 'objects' in features:
-                objects = features['objects']
-                summary['features_summary']['objects_detected'] = len(objects)
-                if objects:
-                    unique_classes = list(set(obj['class_name'] for obj in objects))
-                    summary['features_summary']['unique_object_classes'] = len(unique_classes)
-                    summary['key_findings'].append(f"Detected {len(objects)} objects of {len(unique_classes)} different types")
-
-            if 'colors' in features:
-                colors = features['colors']
-                summary['features_summary']['dominant_colors_extracted'] = len(colors)
-                if colors:
-                    top_color = colors[0]['hex'] if colors else None
-                    summary['key_findings'].append(f"Most dominant color: {top_color}")
-
-            if 'ocr_text' in features:
-                ocr_result = features['ocr_text']
-                text_found = bool(ocr_result.get('text', '').strip())
-                summary['features_summary']['text_detected'] = text_found
-                if text_found:
-                    word_count = ocr_result.get('word_count', 0)
-                    summary['key_findings'].append(f"Detected {word_count} words in image")
-
-            # Add caption and answer info
-            caption = results.get('caption', {}).get('caption', '')
-            answer = results.get('answer', {}).get('answer', '')
-
-            summary['caption_generated'] = bool(caption)
-            summary['question_answered'] = bool(answer)
-
-            if caption:
-                summary['key_findings'].append(f"Generated caption: '{caption[:100]}...' " if len(caption) > 100 else f"Generated caption: '{caption}'")
-
-            if answer:
-                summary['key_findings'].append(f"Answer to question: '{answer[:100]}...' " if len(answer) > 100 else f"Answer to question: '{answer}'")
-
-            return summary
-
-        except Exception as e:
-            logger.error(f"Error generating summary: {str(e)}")
-            return {'error': str(e)}
-
-    def save_results(self, results: Dict[str, Any], output_path: str,
-                    include_images: bool = False) -> bool:
+    def process_batch(self, image_paths: List[str], questions: List[str],
+                      analysis_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
-        Save analysis results to file.
-
-        Args:
-            results (Dict[str, Any]): Analysis results to save
-            output_path (str): Path to save results
-            include_images (bool): Whether to save processed images
-
-        Returns:
-            bool: True if saved successfully
+        Batch processing pipeline.
         """
+        if not image_paths:
+            return []
+            
+        # Use default config if none provided
+        if analysis_config is None:
+            analysis_config = self._get_default_config()
+
+        # Check for model switch (using first config request - assume batch is uniform)
+        requested_model = analysis_config.get('llm_model', 'blip')
+        if requested_model != self.llm_type:
+             self._switch_llm_service(requested_model)
+             
+        # Load images
+        pil_images = []
+        cv_images = []
+        valid_indices = []
+        results = [None] * len(image_paths) # Placeholder for results
+        
+        for i, path in enumerate(image_paths):
+            try:
+                if not os.path.exists(path):
+                    results[i] = {'error': f"File not found: {path}"}
+                    continue
+                    
+                pil_img = Image.open(path).convert('RGB')
+                pil_images.append(pil_img)
+                cv_images.append(cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR))
+                valid_indices.append(i)
+            except Exception as e:
+                results[i] = {'error': f"Failed to load: {str(e)}"}
+
+        if not valid_indices:
+            return results
+
         try:
-            # Create output directory
-            output_dir = os.path.dirname(output_path)
-            if output_dir and not create_output_directory(output_dir):
-                return False
-
-            # Prepare results for JSON serialization
-            json_results = self._prepare_for_json(results)
-
-            # Save JSON results
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(json_results, f, indent=2, ensure_ascii=False)
-
-            # Save images if requested
-            if include_images and self.image_processor and self.image_processor.current_image is not None:
-                base_path = os.path.splitext(output_path)[0]
-
-                # Save original with detections
-                features = results.get('features', {})
-                objects = features.get('objects', [])
-
-                if objects:
-                    detection_image = self.image_processor.draw_detections(objects)
-                    detection_path = f"{base_path}_detections.jpg"
-                    cv2.imwrite(detection_path, detection_image)
-                    logger.info(f"Saved detection image: {detection_path}")
-
-            logger.info(f"Results saved to: {output_path}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error saving results: {str(e)}")
-            return False
-
-    def _prepare_for_json(self, obj: Any) -> Any:
-        """Prepare object for JSON serialization by handling numpy types."""
-        import numpy as np
-
-        if isinstance(obj, dict):
-            return {key: self._prepare_for_json(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [self._prepare_for_json(item) for item in obj]
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, (np.int32, np.int64)):
-            return int(obj)
-        elif isinstance(obj, (np.float32, np.float64)):
-            return float(obj)
-        else:
-            return obj
-
-    def get_system_info(self) -> Dict[str, Any]:
-        """Get information about the multimodal system."""
-        try:
-            info = {
-                'system_version': '1.0.0',
-                'yolo_model': self.yolo_model,
-                'blip_model': self.blip_model,
-                'device': self.device,
-                'components_loaded': {
-                    'image_processor': self.image_processor is not None,
-                    'llm_processor': self.llm_processor is not None and self.llm_processor.model_loaded
+            # Step 1: Batch Object Detection
+            logger.info(f"Batch Step 1: Object Detection ({len(cv_images)} images)")
+            batch_detections = self.vision_service.detect_objects_batch(
+                cv_images, 
+                confidence_threshold=analysis_config.get('object_detection', {}).get('confidence_threshold', 0.5)
+            )
+            
+            # Step 2: Global Captioning
+            logger.info("Batch Step 2: Global Captioning")
+            global_captions = self.llm_service.caption_image_batch(pil_images)
+            
+            # Step 3: Question Answering (Context Construction + QA)
+            logger.info("Batch Step 3: Question Answering")
+            contexts = []
+            valid_questions = [questions[i] for i in valid_indices]
+            
+            for i, detections, caption in zip(valid_indices, batch_detections, global_captions):
+                # Build context (simplified for batch)
+                context = f"Image description: {caption}. "
+                obj_counts = {}
+                for obj in detections:
+                    obj_counts[obj['class_name']] = obj_counts.get(obj['class_name'], 0) + 1
+                obj_desc = ", ".join([f"{count} {name}" for name, count in obj_counts.items()])
+                if obj_desc:
+                    context += f" Objects detected: {obj_desc}."
+                contexts.append(context)
+            
+            answers = self.llm_service.answer_question_batch(pil_images, valid_questions, contexts=contexts)
+            
+            # Reassemble results
+            for i, idx in enumerate(valid_indices):
+                results[idx] = {
+                    'image_path': image_paths[idx],
+                    'question': questions[idx],
+                    'timestamp': datetime.now().isoformat(),
+                    'features': {'objects': batch_detections[i]},
+                    'caption': {'caption': global_captions[i]},
+                    'answer': {'answer': answers[i]},
+                    'summary': {
+                        'key_findings': [
+                            f"Detected {len(batch_detections[i])} objects",
+                            f"Caption: {global_captions[i]}",
+                            f"Answer: {answers[i]}"
+                        ]
+                    }
                 }
-            }
-
-            # Add component-specific info
-            if self.llm_processor and self.llm_processor.model_loaded:
-                info['llm_info'] = self.llm_processor.get_model_info()
-
-            return info
-
+                
         except Exception as e:
-            logger.error(f"Error getting system info: {str(e)}")
-            return {'error': str(e)}
+            logger.error(f"Batch processing error: {str(e)}")
+            for idx in valid_indices:
+                results[idx] = {'error': f"Batch processing failed: {str(e)}"}
+                
+        return results
 
     def cleanup(self) -> None:
-        """Clean up resources."""
-        try:
-            if self.llm_processor:
-                self.llm_processor.cleanup()
-
-            # Clear stored results
-            self.last_results = {}
-
-            logger.info("MultimodalAI system cleaned up successfully")
-
-        except Exception as e:
-            logger.error(f"Error during cleanup: {str(e)}")
-
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        self.cleanup()
+        """Clean up services."""
+        # Services might implement their own cleanup if needed
+        self.last_results = {}
+        logger.info("MultimodalAI system cleaned up")

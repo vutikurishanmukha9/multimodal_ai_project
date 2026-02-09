@@ -2,6 +2,7 @@
 Enhanced Streamlit web application for the Multimodal AI System.
 
 Features:
+- Client-Server Architecture (connects to FastAPI backend)
 - Dark/Light theme toggle
 - Modern glass-morphism UI
 - Image history gallery
@@ -20,41 +21,23 @@ import io
 import json
 import logging
 from typing import Dict, Any, Optional, List
-import tempfile
+import time
+import requests
 import os
 import sys
-import requests
 from datetime import datetime
 
-# Custom JSON encoder for numpy types
-class NumpyEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles numpy types."""
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, (np.int8, np.int16, np.int32, np.int64,
-                           np.uint8, np.uint16, np.uint32, np.uint64)):
-            return int(obj)
-        if isinstance(obj, (np.float16, np.float32, np.float64)):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
-
-# Add parent directory to path for Streamlit execution
+# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import our modules
-try:
-    from src.multimodal_system import MultimodalAI
-    from src.utils import convert_bgr_to_rgb
-except ImportError:
-    from multimodal_system import MultimodalAI
-    from utils import convert_bgr_to_rgb
+from src.utils import convert_bgr_to_rgb
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# API Configuration
+API_URL = "http://localhost:8000"
 
 # Page configuration
 st.set_page_config(
@@ -384,89 +367,17 @@ def init_session_state():
         st.session_state.current_results = None
     if 'selected_question' not in st.session_state:
         st.session_state.selected_question = ""
+    if 'api_healthy' not in st.session_state:
+        st.session_state.api_healthy = False
 
 
-@st.cache_resource
-def load_multimodal_system():
-    """Load the multimodal AI system with caching."""
+def check_api_health() -> bool:
+    """Check if API is running."""
     try:
-        system = MultimodalAI(
-            yolo_model="yolov8n.pt",
-            blip_model="Salesforce/blip-image-captioning-base",
-            device="auto"
-        )
-        return system
-    except Exception as e:
-        logger.error(f"Failed to load multimodal system: {str(e)}")
-        return None
-
-
-def load_face_cascade():
-    """Load OpenCV face detection cascade."""
-    try:
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        face_cascade = cv2.CascadeClassifier(cascade_path)
-        return face_cascade
-    except Exception as e:
-        logger.error(f"Failed to load face cascade: {str(e)}")
-        return None
-
-
-def detect_faces(image: np.ndarray) -> List[Dict]:
-    """Detect faces in an image using OpenCV."""
-    face_cascade = load_face_cascade()
-    if face_cascade is None:
-        return []
-    
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-    
-    results = []
-    for (x, y, w, h) in faces:
-        results.append({
-            'bbox': (int(x), int(y), int(x + w), int(y + h)),
-            'confidence': 0.85,  # Haar cascade doesn't provide confidence
-            'width': int(w),
-            'height': int(h)
-        })
-    
-    return results
-
-
-def calculate_image_quality(image: np.ndarray) -> Dict[str, Any]:
-    """Calculate image quality metrics."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Brightness (mean pixel value)
-    brightness = np.mean(gray)
-    
-    # Contrast (standard deviation)
-    contrast = np.std(gray)
-    
-    # Sharpness (Laplacian variance)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    sharpness = laplacian.var()
-    
-    # Blur detection (lower = more blurry)
-    is_blurry = sharpness < 100
-    
-    # Overall score (0-100)
-    brightness_score = min(100, max(0, 100 - abs(brightness - 127) * 0.8))
-    contrast_score = min(100, contrast * 1.5)
-    sharpness_score = min(100, sharpness / 10)
-    
-    overall_score = (brightness_score * 0.3 + contrast_score * 0.3 + sharpness_score * 0.4)
-    
-    return {
-        'brightness': round(brightness, 2),
-        'contrast': round(contrast, 2),
-        'sharpness': round(sharpness, 2),
-        'is_blurry': is_blurry,
-        'brightness_score': round(brightness_score, 1),
-        'contrast_score': round(contrast_score, 1),
-        'sharpness_score': round(sharpness_score, 1),
-        'overall_score': round(overall_score, 1)
-    }
+        response = requests.get(f"{API_URL}/health", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
 
 
 def load_image_from_url(url: str) -> Optional[np.ndarray]:
@@ -482,11 +393,11 @@ def load_image_from_url(url: str) -> Optional[np.ndarray]:
         return None
 
 
-def add_to_history(image_path: str, thumbnail: Image.Image, results: Dict):
+def add_to_history(image_path_or_url: str, thumbnail: Image.Image, results: Dict):
     """Add analyzed image to history."""
     history_item = {
         'timestamp': datetime.now().strftime("%H:%M:%S"),
-        'image_path': image_path,
+        'image_path': image_path_or_url,
         'thumbnail': thumbnail,
         'results': results
     }
@@ -502,9 +413,11 @@ def get_suggested_questions(results: Dict) -> List[str]:
     """Generate suggested questions based on analysis results."""
     questions = []
     
+    features = results.get('features', {})
+    
     # Based on detected objects
-    if results.get('features', {}).get('objects'):
-        objects = results['features']['objects']
+    if features.get('objects'):
+        objects = features['objects']
         if objects:
             class_names = list(set([obj['class_name'] for obj in objects]))
             if len(class_names) == 1:
@@ -514,11 +427,11 @@ def get_suggested_questions(results: Dict) -> List[str]:
             questions.append("What is the main subject of this image?")
     
     # Based on colors
-    if results.get('features', {}).get('colors'):
+    if features.get('colors'):
         questions.append("Why are these colors dominant in this image?")
     
     # Based on text
-    if results.get('features', {}).get('ocr_text', {}).get('text'):
+    if features.get('ocr_text', {}).get('text'):
         questions.append("What does the text in the image say?")
     
     # Generic questions
@@ -558,20 +471,15 @@ def display_image_with_detections(image: np.ndarray, detections: List, faces: Li
             cv2.putText(result_image, label, (x1, y1 - baseline - 2), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
-    # Draw face detections
-    if faces:
-        for face in faces:
-            x1, y1, x2, y2 = face['bbox']
-            cv2.rectangle(result_image, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            cv2.putText(result_image, "Face", (x1, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    # Draw face detections if available from backend (backend upgrade needed for this)
+    # For now, we rely on the results structure
     
     return result_image
 
 
 def display_quality_metrics(quality: Dict):
     """Display image quality metrics."""
-    score = quality['overall_score']
+    score = quality.get('overall_score', 0)
     
     if score >= 70:
         score_class = "quality-good"
@@ -596,7 +504,7 @@ def display_quality_metrics(quality: Dict):
     with col2:
         st.markdown(f"""
         <div class="stat-card">
-            <div class="stat-number">{quality['brightness']:.0f}</div>
+            <div class="stat-number">{quality.get('brightness', 0):.0f}</div>
             <div class="stat-label">Brightness</div>
         </div>
         """, unsafe_allow_html=True)
@@ -604,13 +512,13 @@ def display_quality_metrics(quality: Dict):
     with col3:
         st.markdown(f"""
         <div class="stat-card">
-            <div class="stat-number">{quality['contrast']:.0f}</div>
+            <div class="stat-number">{quality.get('contrast', 0):.0f}</div>
             <div class="stat-label">Contrast</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col4:
-        blur_text = "Yes" if quality['is_blurry'] else "No"
+        blur_text = "Yes" if quality.get('is_blurry', False) else "No"
         st.markdown(f"""
         <div class="stat-card">
             <div class="stat-number">{blur_text}</div>
@@ -631,7 +539,7 @@ def display_color_palette(colors: List):
     for i, color in enumerate(colors[:5]):
         with cols[i]:
             hex_color = color['hex']
-            percentage = color['percentage']
+            percentage = color.get('percentage', 0)
             
             st.markdown(f"""
                 <div style="
@@ -688,10 +596,46 @@ def create_sidebar():
         
         st.divider()
         
+        # Connection Status
+        if st.button("Check API Connection"):
+            if check_api_health():
+                st.success("Connected to Backend API")
+                st.session_state.api_healthy = True
+            else:
+                st.error("Cannot connect to Backend API")
+                st.session_state.api_healthy = False
+        
+        if st.session_state.api_healthy:
+            st.markdown('<div class="success-box">API Connected</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="error-box">API Disconnected</div>', unsafe_allow_html=True)
+            st.caption(f"Make sure API is running at {API_URL}")
+
+        st.divider()
+        
         # Analysis configuration
         st.markdown("### Analysis Options")
         
         config = {}
+
+        # Model Selection (New 10x Feature)
+        st.markdown("#### Model Backend")
+        llm_model = st.selectbox(
+            "Vision Language Model",
+            ["blip", "llava"],
+            format_func=lambda x: "LlaVA (Smart & Slow)" if x == "llava" else "BLIP (Fast & Basic)",
+            help="Choose 'LlaVA' for complex reasoning (requires GPU). Choose 'BLIP' for speed."
+        )
+        config['llm_model'] = llm_model
+        
+        # Reasoning Mode
+        reasoning_mode = st.radio(
+            "Analysis Mode",
+            ["detailed", "fast"],
+            format_func=lambda x: "Detailed (Visual CoT)" if x == "detailed" else "Fast (Global Caption only)",
+            help="Detailed mode crops objects and captions them individually for better reasoning."
+        )
+        config['reasoning_mode'] = reasoning_mode
         
         # Object detection
         config['object_detection'] = {
@@ -699,7 +643,7 @@ def create_sidebar():
             'confidence_threshold': st.slider("Confidence", 0.1, 1.0, 0.5, 0.05),
         }
         
-        # Face detection
+        # Face detection (Placeholder for now as it needs backend update to be fully configurable via config)
         config['face_detection'] = {
             'enabled': st.checkbox("Face Detection", value=True)
         }
@@ -732,6 +676,9 @@ def create_sidebar():
                         st.image(item['thumbnail'], width=50)
                     with col2:
                         st.caption(item['timestamp'])
+                        if st.button("Load", key=f"hist_{i}"):
+                            st.session_state.current_results = item.get('results')
+                            st.rerun()
         
         return config
 
@@ -739,6 +686,11 @@ def create_sidebar():
 def main():
     """Main Streamlit application."""
     init_session_state()
+    
+    # Check health on first load
+    if not st.session_state.api_healthy:
+        if check_api_health():
+           st.session_state.api_healthy = True
     
     # Apply theme
     st.markdown(get_theme_css(st.session_state.dark_mode), unsafe_allow_html=True)
@@ -749,20 +701,13 @@ def main():
     # Feature badges
     st.markdown("""
     <div style="text-align: center; margin-bottom: 1em;">
+        <span class="feature-badge">Async API</span>
         <span class="feature-badge">YOLOv8 Detection</span>
         <span class="feature-badge">BLIP Captioning</span>
-        <span class="feature-badge">Face Detection</span>
         <span class="feature-badge">Color Analysis</span>
         <span class="feature-badge">OCR</span>
-        <span class="feature-badge">Quality Scoring</span>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Load system
-    system = load_multimodal_system()
-    if system is None:
-        st.error("Failed to initialize the multimodal AI system. Please check the logs.")
-        return
     
     # Sidebar configuration
     config = create_sidebar()
@@ -774,7 +719,8 @@ def main():
     upload_tab, url_tab = st.tabs(["Upload Image", "Load from URL"])
     
     image = None
-    temp_image_path = None
+    image_bytes = None
+    image_source = None
     
     with upload_tab:
         uploaded_file = st.file_uploader(
@@ -785,6 +731,9 @@ def main():
         
         if uploaded_file is not None:
             image = Image.open(uploaded_file)
+            uploaded_file.seek(0)
+            image_bytes = uploaded_file.read()
+            image_source = "upload"
     
     with url_tab:
         url = st.text_input("Enter image URL", placeholder="https://example.com/image.jpg")
@@ -792,200 +741,180 @@ def main():
             with st.spinner("Loading image from URL..."):
                 loaded_image = load_image_from_url(url)
                 if loaded_image is not None:
+                    # Convert to PIL for consistency
                     image = Image.fromarray(cv2.cvtColor(loaded_image, cv2.COLOR_BGR2RGB))
+                    # Encode back to bytes for API
+                    success, encoded_img = cv2.imencode('.jpg', loaded_image)
+                    if success:
+                        image_bytes = encoded_img.tobytes()
+                    image_source = "url"
                 else:
                     st.error("Failed to load image from URL")
     
     st.markdown('</div>', unsafe_allow_html=True)
     
-    if image is not None:
+    # Question input
+    question = st.text_input(
+        "Ask a question about the image:", 
+        value=st.session_state.selected_question if st.session_state.selected_question else "Describe this image in detail"
+    )
+    
+    # Analysis button
+    if image is not None and st.button("Analyze Image", type="primary"):
+        if not st.session_state.api_healthy:
+            st.error("API is not connected. Please make sure the backend server is running.")
+        else:
+            with st.spinner("Submitting analysis job..."):
+                try:
+                    # Prepare config
+                    config_json = json.dumps(config)
+                    
+                    # Send request
+                    files = {"file": ("image.jpg", image_bytes, "image/jpeg")}
+                    data = {"question": question, "config": config_json}
+                    
+                    response = requests.post(f"{API_URL}/analyze", files=files, data=data) 
+                    
+                    if response.status_code == 200:
+                        job_data = response.json()
+                        job_id = job_data['job_id']
+                        
+                        # Polling loop
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        while True:
+                            status_response = requests.get(f"{API_URL}/jobs/{job_id}")
+                            if status_response.status_code != 200:
+                                st.error("Failed to get job status")
+                                break
+                                
+                            job_status = status_response.json()
+                            status = job_status['status']
+                            
+                            if status == "PENDING":
+                                status_text.text("Job pending...")
+                                progress_bar.progress(20)
+                            elif status == "PROCESSING":
+                                status_text.text("Processing image (YOLO + BLIP + OCR)...")
+                                progress_bar.progress(60)
+                            elif status == "COMPLETED":
+                                progress_bar.progress(100)
+                                status_text.success("Analysis complete!")
+                                st.session_state.current_results = job_status['result']
+                                # Add thumbnail
+                                thumbnail = image.copy()
+                                thumbnail.thumbnail((100, 100))
+                                add_to_history(image_source, thumbnail, job_status['result'])
+                                break
+                            elif status == "FAILED":
+                                st.error(f"Analysis failed: {job_status.get('error')}")
+                                break
+                                
+                            time.sleep(1) # Poll every second
+                            
+                    else:
+                        st.error(f"Failed to submit job: {response.text}")
+                        
+                except Exception as e:
+                    st.error(f"Error during analysis: {str(e)}")
+                    
+    # Display Results
+    if st.session_state.current_results:
+        results = st.session_state.current_results
+        
+        st.divider()
+        
+        # Featured Result: Answer and Caption
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-            st.markdown("### Input Image")
-            st.image(image, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown("### Image")
+            # Convert PIL image to array for OpenCV drawing
+            if image:
+                img_array = np.array(image)
+                # Convert RGB to BGR for OpenCV
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                
+                # Draw detections
+                features = results.get('features', {})
+                objects = features.get('objects', [])
+                # Note: Faces logic needs to be propagated from backend features if relevant
+                
+                annotated_img = display_image_with_detections(img_array, objects)
+                
+                # Convert back to RGB for Streamlit
+                st.image(cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+            elif image_source:
+                 st.info("Image not loaded in current context (loaded from history/url)")
         
         with col2:
-            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-            st.markdown("### Ask a Question")
+            st.markdown("### AI Analysis")
             
-            # Question input
-            question = st.text_input(
-                "Your question",
-                value=st.session_state.selected_question,
-                placeholder="What do you see in this image?"
-            )
+            # Caption
+            caption = results.get('caption', {}).get('caption', 'No caption generated')
+            st.markdown(f"""
+            <div class="info-box">
+                <strong>📝 Caption:</strong><br>
+                {caption}
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Suggested questions (shown after first analysis)
-            if st.session_state.current_results:
-                suggestions = get_suggested_questions(st.session_state.current_results)
-                st.markdown("**Suggested questions:**")
-                suggestion_cols = st.columns(3)
-                for i, suggestion in enumerate(suggestions[:3]):
-                    with suggestion_cols[i]:
-                        if st.button(suggestion[:30] + "..." if len(suggestion) > 30 else suggestion, key=f"sugg_{i}"):
-                            st.session_state.selected_question = suggestion
-                            st.rerun()
+            # Answer
+            answer = results.get('answer', {}).get('answer', 'No answer generated')
+            st.markdown(f"""
+            <div class="success-box">
+                <strong>💡 Answer to "{results.get('question', 'your question')}":</strong><br>
+                {answer}
+            </div>
+            """, unsafe_allow_html=True)
             
-            analyze_button = st.button("Analyze Image", type="primary", use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Key Findings
+            st.markdown("#### Key Findings")
+            summary = results.get('summary', {})
+            for finding in summary.get('key_findings', []):
+                st.markdown(f"- {finding}")
         
-        if analyze_button and question:
-            try:
-                # Save temp file
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-                    image.save(tmp_file.name)
-                    temp_image_path = tmp_file.name
+        # Tabs for details
+        tab1, tab2, tab3, tab4 = st.tabs(["Objects", "Colors", "Text", "Stats"])
+        
+        with tab1:
+            features = results.get('features', {})
+            display_object_summary(features.get('objects', []))
+            
+        with tab2:
+            features = results.get('features', {})
+            display_color_palette(features.get('colors', []))
+            
+        with tab3:
+            features = results.get('features', {})
+            ocr_text = features.get('ocr_text', {}).get('text', '')
+            if ocr_text:
+                st.markdown("### Extracted Text")
+                st.text_area("OCR Result", ocr_text, height=150)
+            else:
+                st.info("No text detected.")
                 
-                # Progress indicator
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                status_text.text("Loading image...")
-                progress_bar.progress(10)
-                
-                # Load image for additional processing
-                cv_image = cv2.imread(temp_image_path)
-                
-                status_text.text("Running object detection...")
-                progress_bar.progress(30)
-                
-                # Run main analysis
-                results = system.process(temp_image_path, question, config)
-                
-                status_text.text("Detecting faces...")
-                progress_bar.progress(50)
-                
-                # Face detection
-                faces = []
-                if config.get('face_detection', {}).get('enabled', True):
-                    faces = detect_faces(cv_image)
-                    results['faces'] = faces
-                
-                status_text.text("Analyzing image quality...")
-                progress_bar.progress(70)
-                
-                # Quality analysis
-                quality = None
-                if config.get('quality_analysis', {}).get('enabled', True):
-                    quality = calculate_image_quality(cv_image)
-                    results['quality'] = quality
-                
-                status_text.text("Generating response...")
-                progress_bar.progress(90)
-                
-                # Store results
-                st.session_state.current_results = results
-                
-                # Add to history
-                thumbnail = image.copy()
-                thumbnail.thumbnail((100, 100))
-                add_to_history(temp_image_path, thumbnail, results)
-                
-                progress_bar.progress(100)
-                status_text.text("Analysis complete!")
-                
-                # Display results
-                st.divider()
-                
-                # AI Response
-                st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                st.markdown("### AI Response")
-                
-                if results.get('caption', {}).get('caption'):
-                    st.markdown(f"**Caption:** {results['caption']['caption']}")
-                
-                if results.get('answer', {}).get('answer'):
-                    st.markdown(f"""
-                    <div class="success-box">
-                        <strong>Answer:</strong> {results['answer']['answer']}
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Results tabs
-                tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                    "Objects", "Faces", "Colors", "Text", "Quality"
-                ])
-                
-                with tab1:
-                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                    objects = results.get('features', {}).get('objects', [])
-                    display_object_summary(objects)
-                    
-                    if objects:
-                        # Show annotated image
-                        annotated = display_image_with_detections(cv_image, objects, faces)
-                        st.image(convert_bgr_to_rgb(annotated), caption="Detected Objects", use_container_width=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with tab2:
-                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                    st.markdown("### Face Detection")
-                    if faces:
-                        st.metric("Faces Detected", len(faces))
-                        for i, face in enumerate(faces):
-                            st.markdown(f"- Face {i+1}: {face['width']}x{face['height']} pixels")
-                    else:
-                        st.info("No faces detected in the image.")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with tab3:
-                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                    colors = results.get('features', {}).get('colors', [])
-                    display_color_palette(colors)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with tab4:
-                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                    st.markdown("### Extracted Text (OCR)")
-                    ocr_result = results.get('features', {}).get('ocr_text', {})
-                    text = ocr_result.get('text', '')
-                    if text and text.strip():
-                        st.code(text)
-                    else:
-                        st.info("No text detected in the image.")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                with tab5:
-                    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-                    st.markdown("### Image Quality Analysis")
-                    if quality:
-                        display_quality_metrics(quality)
-                    else:
-                        st.info("Quality analysis not available.")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Download results
-                st.divider()
-                results_json = json.dumps(results, indent=2, cls=NumpyEncoder)
-                st.download_button(
-                    label="Download Analysis Results (JSON)",
-                    data=results_json,
-                    file_name=f"analysis_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
-                
-                # Cleanup
-                if temp_image_path and os.path.exists(temp_image_path):
-                    os.unlink(temp_image_path)
-                
-            except Exception as e:
-                st.markdown(f'<div class="error-box">Error during analysis: {str(e)}</div>', 
-                           unsafe_allow_html=True)
-                logger.error(f"Analysis error: {str(e)}")
-    
-    # Footer
-    st.divider()
-    st.markdown("""
-    <div style="text-align: center; color: var(--text-secondary); padding: 1em;">
-        Built with OpenCV, YOLOv8, BLIP, and Streamlit
-    </div>
-    """, unsafe_allow_html=True)
-
+        with tab4:
+             features = results.get('features', {})
+             stats = features.get('image_stats', {})
+             # Using the image stats which might contain the quality metrics
+             # Ideally, we should ensure the backend fills this.
+             # For now, we display what we have.
+             st.json(stats)
+        
+        # Suggested questions
+        st.divider()
+        st.markdown("### Follow-up Questions")
+        
+        suggestions = get_suggested_questions(results)
+        
+        cols = st.columns(3)
+        for i, q in enumerate(suggestions):
+            with cols[i % 3]:
+                if st.button(q, key=f"q_{i}"):
+                    st.session_state.selected_question = q
+                    st.rerun()
 
 if __name__ == "__main__":
     main()

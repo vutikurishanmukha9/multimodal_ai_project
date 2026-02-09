@@ -24,4 +24,11 @@ pytest-cov==5.0.0
 
 # Optional GPU support (uncomment if using CUDA)
 # torchvision==0.19.1
-# torchaudio==2.5.1
+
+# API dependencies
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
+bitsandbytes
+accelerate
+protobuf
