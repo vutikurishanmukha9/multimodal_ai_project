@@ -73,3 +73,7 @@ Thumbs.db
 
 # Hugging Face cache
 .huggingface/
+
+# Test Artifacts
+bench_img_*.jpg
+test_batch_*.jpg
